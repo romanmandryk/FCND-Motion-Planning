@@ -26,3 +26,11 @@ planning_utils contains useful methods which were re-used few times in previous 
 plan_path function:
  - sets important parameters for the planning like altitude, safety distance from obstacles, start and goal positions
  - then executes a_star to find the path from start to goal and sends waypoints to the simulator for visualisation.
+
+Implementation: grid based:
+- reading lat0 and lon0 from csv is implemented in function `read_home_location` and set as global home on line 165
+- I calculate local_start at line 172 and then at 189 set grid_start as grid index offset from local position (as int)
+- the step above allows to start from anywhere (verified by multiple consecutive starts from previous goals) - NOTE: I hoped I could set an arbitrary start position in simulator but it seems not possible.
+- at line 185 I calculate local_goal from GLOBAL_GOAL (set as (lat, lon, alt)) and then convert it in to a grid goal 
+- at planning_utils I added 4 more directions in to Action Enum and `valid_actions` function
+- used standard grid based A* algorithm to find the path and colinearity method to prune the path of unnecessary waypoints 
