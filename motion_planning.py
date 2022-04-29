@@ -5,7 +5,8 @@ from enum import Enum, auto
 
 import numpy as np
 
-from planning_utils import a_star, heuristic, create_grid
+from planning_utils import in_collision, breadth_first
+from planning_rrt import a_star_graph, heuristic, create_grid, generate_RRT, nearest_neighbor
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
@@ -49,7 +50,11 @@ class States(Enum):
     PLANNING = auto()
 
 
+
 class MotionPlanning(Drone):
+    grid = np.array([])
+    north_offset = 0
+    east_offset = 0
 
     def __init__(self, connection):
         super().__init__(connection)
@@ -72,7 +77,7 @@ class MotionPlanning(Drone):
             if -1.0 * self.local_position[2] > 0.95 * self.target_position[2]:
                 self.waypoint_transition()
         elif self.flight_state == States.WAYPOINT:
-            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 1.0:
+            if np.linalg.norm(self.target_position[0:2] - self.local_position[0:2]) < 4.0:
                 if len(self.waypoints) > 0:
                     self.waypoint_transition()
                 else:
@@ -109,10 +114,34 @@ class MotionPlanning(Drone):
         print("takeoff transition")
         self.takeoff(self.target_position[2])
 
+    def local_to_grid(self, local):
+        return int(local[0]) - self.north_offset, int(local[1]) - self.east_offset
+
     def waypoint_transition(self):
         self.flight_state = States.WAYPOINT
         print("waypoint transition")
         self.target_position = self.waypoints.pop(0)
+        grid_start = self.local_to_grid(self.local_position)
+        grid_goal = self.local_to_grid(self.target_position)
+        while self.grid[grid_goal[0], grid_goal[1]] == 1:
+            print('rrt waypoint in the obstacle')
+            self.target_position = self.waypoints.pop(0)
+            grid_goal = self.local_to_grid(self.target_position)
+
+        if in_collision(self.grid, grid_start, grid_goal):
+            while self.grid[grid_goal[0], grid_goal[1]] == 1:
+                print('rrt waypoint in the obstacle')
+                self.target_position = self.waypoints.pop(0)
+                grid_goal = self.local_to_grid(self.target_position)
+            new_path = breadth_first(self.grid, grid_start, grid_goal)
+            pruned_path = prune_path(new_path)
+            print('REPLANNING, new path to next waypoint', pruned_path)
+            # for each point adding in reverse order to waypoints and dropping current position
+            for wp in pruned_path[1:][::-1]:
+                self.waypoints.insert(0, [wp[0] + self.north_offset, wp[1] + self.east_offset, self.target_position[2], self.target_position[3]])
+            #self.send_waypoints()
+            print('original target position', self.target_position)
+            self.target_position = self.waypoints.pop(0)
         print('target position', self.target_position)
         self.cmd_position(self.target_position[0], self.target_position[1], self.target_position[2],
                           self.target_position[3])
@@ -151,13 +180,15 @@ class MotionPlanning(Drone):
         self.flight_state = States.PLANNING
         print("Searching for a path ...")
         TARGET_ALTITUDE = 5
-        SAFETY_DISTANCE = 5
+        SAFETY_DISTANCE = 1
+        num_vertices = 500
+        dt = 40
         # initial lat0 37.792480 lon0 -122.397450
         #GOAL_GLOBAL = (37.792880, -122.397450, TARGET_ALTITUDE)
         #GOAL_GLOBAL = (37.792580, -122.398950, TARGET_ALTITUDE)
-        GOAL_GLOBAL = (37.794780, -122.399450, TARGET_ALTITUDE)
-        # GOAL_GLOBAL = (37.795480, -122.401950, TARGET_ALTITUDE) # failing in AttributeError: 'int' object has no attribute 'time' drone.py:117
-        # GOAL_GLOBAL = (37.789980, -122.393550, TARGET_ALTITUDE) # failing at ConnectionResetError: [Errno 54] Connection reset by peer
+        #GOAL_GLOBAL = (37.794780, -122.399450, TARGET_ALTITUDE)
+        #GOAL_GLOBAL = (37.795480, -122.401950, TARGET_ALTITUDE)
+        GOAL_GLOBAL = (37.789980, -122.394550, TARGET_ALTITUDE)
 
         self.target_position[2] = TARGET_ALTITUDE
 
@@ -180,6 +211,9 @@ class MotionPlanning(Drone):
 
         # Define a grid for a particular altitude and safety margin around obstacles
         grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
+        self.grid = grid
+        self.north_offset = north_offset
+        self.east_offset = east_offset
         print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
         # Define starting point on the grid (this is just grid center)
         local_goal = global_to_local(reverse_lat_lng(GOAL_GLOBAL), self.global_home)
@@ -190,7 +224,7 @@ class MotionPlanning(Drone):
         # Set goal as some arbitrary position on the grid
         # adapt to set goal as latitude / longitude position and convert
         grid_goal = (int(local_goal[0]) - north_offset, int(local_goal[1]) - east_offset)
-        # Run A* to find a path from start to goal
+        # Change Run A* to find a path from start to goal
         # add diagonal motions with a cost of sqrt(2) to your A* implementation
         # or move to a different search space such as a graph (not done here)
         print('Local Start and Goal: ', grid_start, grid_goal)
@@ -200,14 +234,16 @@ class MotionPlanning(Drone):
         if grid[grid_start[0], grid_start[1]] == 1:
             print("start inside the obstacle! Change start position.")
             exit(-1)
-        path, _ = a_star(grid, heuristic, grid_start, grid_goal)
-        # prune path to minimize number of waypoints
-        # TODO (if you're feeling ambitious): Try a different approach altogether!
-        pruned_path = prune_path(path)
-        print('lengths of paths (initial,pruned)', len(path), len(pruned_path))
 
-        # Convert path to waypoints
-        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in pruned_path]
+        rrt = generate_RRT(grid, grid_start, num_vertices, dt)
+        x_near_goal = nearest_neighbor(grid_goal, rrt)
+        rrt.add_edge(x_near_goal, grid_goal, 0)
+        path, cost = a_star_graph(rrt.graph, heuristic, grid_start, grid_goal)
+        print("path length", len(path), path)
+
+
+        # Convert path to waypoint
+        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
         # Set self.waypoints
         self.waypoints = waypoints
         # send waypoints to sim (this is just for visualization of waypoints)

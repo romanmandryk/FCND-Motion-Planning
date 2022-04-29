@@ -1,6 +1,7 @@
 from enum import Enum
-from queue import PriorityQueue
+from queue import PriorityQueue, Queue
 import numpy as np
+from bresenham import bresenham
 
 SQRT2 = np.sqrt(2)
 
@@ -152,7 +153,61 @@ def a_star(grid, h, start, goal):
     return path[::-1], path_cost
 
 
-
 def heuristic(position, goal_position):
     return np.linalg.norm(np.array(position) - np.array(goal_position))
 
+
+def breadth_first(grid, start, goal):
+    q = Queue()
+    q.put(start)
+    visited = set()
+    visited.add(start)
+    branch = {}
+    found = False
+    # Run loop while queue is not empty
+    while not q.empty():
+        # first element from the queue
+        current_node = q.get()
+        # node corresponds to the goal state
+        if current_node == goal:
+            print('Found a path.')
+            found = True
+            break
+        else:
+            v_actions = valid_actions(grid, current_node)
+            for action in v_actions:
+                new_node = (current_node[0] + action.value[0], current_node[1] + action.value[1])
+                if new_node not in visited:
+                    visited.add(new_node)
+                    q.put(new_node)
+                    branch[new_node] = (current_node, action)
+
+    # Now, if you found a path, retrace your steps through
+    # the branch dictionary to find out how you got there!
+    path = []
+    if found:
+        # retrace steps
+        path = []
+        n = goal
+        while branch[n][0] != start:
+            path.append(branch[n][0])
+            n = branch[n][0]
+        path.append(branch[n][0])
+
+    return path[::-1]
+
+def in_collision(grid, p1, p2):
+    cells = list(bresenham(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1])))
+    hit = False
+    for c in cells:
+        # First check if we're off the map
+        if np.amin(c) < 0 or c[0] >= grid.shape[0] or c[1] >= grid.shape[1]:
+            print('found collision oob', c)
+            hit = True
+            break
+        # Next check if we're in collision
+        if grid[c[0], c[1]] == 1:
+            print('found collision obstacle', c)
+            hit = True
+            break
+    return hit
